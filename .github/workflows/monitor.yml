@@ -61,7 +61,14 @@ jobs:
               MSG="feat: 发现新版本 -> $(python3 -c "import json;print(' '.join(json.load(open('data/last_run.json'))['newVersions']))")"
             fi
             git commit -m "$MSG"
-            git push
+            # 远端可能有新提交，rebase 后重试推送
+            for i in 1 2 3; do
+              if git push; then break; fi
+              echo "push 失败，拉取远端更新后重试（第 $i 次）"
+              git fetch origin
+              git rebase origin/main || { git rebase --abort; exit 1; }
+              sleep 5
+            done
           fi
 
       - name: 组装站点文件
