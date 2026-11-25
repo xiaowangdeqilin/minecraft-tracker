@@ -1,0 +1,97 @@
+name: 监测 Minecraft 版本更新
+
+on:
+  schedule:
+    # 每 6 小时运行一次（UTC）
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      backfill_version:
+        description: "手动补拆的版本 ID（可逗号分隔多个，留空则只监测新版本）"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    name: 监测并拆包新版本
+    runs-on: ubuntu-latest
+    outputs:
+      has_new: ${{ steps.result.outputs.has_new }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 拉取版本清单并拆包
+        env:
+          BACKFILL_VERSION: ${{ github.event.inputs.backfill_version }}
+          TRACK_RELEASES: "30"
+          TRACK_SNAPSHOTS: "30"
+        run: python scripts/fetch_versions.py
+
+      - name: 记录结果
+        id: result
+        run: |
+          NEW=$(python3 -c "import json;print(' '.join(json.load(open('data/last_run.json'))['newVersions']))")
+          if [ -n "$NEW" ]; then echo "has_new=true" >> "$GITHUB_OUTPUT"; else echo "has_new=false" >> "$GITHUB_OUTPUT"; fi
+          echo "新版本: ${NEW:-无}"
+
+      - name: 提交数据更新
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/
+          if git diff --cached --quiet; then
+            echo "无数据变更，跳过提交"
+          else
+            MSG="chore: 版本数据更新"
+            if [ -n "$(python3 -c "import json;print(' '.join(json.load(open('data/last_run.json'))['newVersions']))")" ]; then
+              MSG="feat: 发现新版本 -> $(python3 -c "import json;print(' '.join(json.load(open('data/last_run.json'))['newVersions']))")"
+            fi
+            git commit -m "$MSG"
+            git push
+          fi
+
+      - name: 组装站点文件
+        run: |
+          mkdir -p _site
+          cp index.html _site/
+          cp -r data _site/data
+
+      - name: 上传 Pages 静态站点
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: 部署 GitHub Pages
+    needs: monitor
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: 开通/配置 Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: 新版本通知摘要
+        if: needs.monitor.outputs.has_new == 'true'
+        run: |
+          echo "### 🎉 监测到 Minecraft 新版本" >> "$GITHUB_STEP_SUMMARY"
+          echo "$(cat data/last_run.json | python3 -c "import json,sys;print('\n'.join('- `'+v+'`' for v in json.load(sys.stdin)['newVersions']))")" >> "$GITHUB_STEP_SUMMARY"

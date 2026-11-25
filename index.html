@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Minecraft 版本追踪站</title>
+<style>
+:root {
+  --bg: #0f1117; --panel: #171a23; --panel2: #1e2230; --border: #2a2f3e;
+  --text: #e6e8ee; --muted: #8b91a5; --accent: #4f8cff; --accent2: #7c5cff;
+  --green: #3fb96f; --red: #e5484d; --gold: #d9a53f;
+  --release: #3fb96f; --snapshot: #4f8cff; --april: #d9a53f;
+  --old: #8b91a5;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.6 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 24px 16px 80px; }
+
+header { padding: 20px 0 8px; }
+h1 { font-size: 22px; display: flex; align-items: center; gap: 10px; }
+h1 .cube { width: 26px; height: 26px; background: linear-gradient(135deg, var(--accent) 0 50%, var(--green) 50% 100%); border-radius: 5px; image-rendering: pixelated; }
+.sub { color: var(--muted); margin-top: 6px; font-size: 13px; }
+.stats { display: flex; gap: 12px; flex-wrap: wrap; margin: 16px 0; }
+.stat { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 16px; min-width: 130px; }
+.stat b { font-size: 20px; display: block; }
+.stat span { color: var(--muted); font-size: 12px; }
+
+.toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 12px 0; position: sticky; top: 0; background: var(--bg); padding: 10px 0; z-index: 5; }
+.chip { padding: 6px 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel); cursor: pointer; color: var(--muted); font-size: 13px; user-select: none; }
+.chip.active { color: #fff; border-color: transparent; }
+.chip[data-type="release"].active { background: var(--release); }
+.chip[data-type="snapshot"].active { background: var(--snapshot); }
+.chip[data-type="april_fools"].active { background: var(--april); }
+.chip[data-type="old_beta"].active, .chip[data-type="old_alpha"].active { background: var(--old); color: #111; }
+.search { flex: 1; min-width: 200px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; color: var(--text); outline: none; }
+.search:focus { border-color: var(--accent); }
+
+table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+thead th { text-align: left; padding: 10px 12px; background: var(--panel2); color: var(--muted); font-size: 12px; font-weight: 600; position: sticky; top: 48px; }
+tbody td { padding: 8px 12px; border-top: 1px solid var(--border); }
+tbody tr:hover { background: rgba(79,140,255,.06); }
+.badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; color: #fff; }
+.badge.release { background: var(--release); } .badge.snapshot { background: var(--snapshot); }
+.badge.april_fools { background: var(--april); } .badge.old_beta, .badge.old_alpha { background: var(--old); color: #111; }
+.tag-tracked { font-size: 11px; color: var(--green); border: 1px solid var(--green); border-radius: 4px; padding: 0 6px; margin-left: 8px; }
+input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+.size { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+#selectionBar { position: fixed; bottom: 0; left: 0; right: 0; background: var(--panel2); border-top: 2px solid var(--accent); padding: 12px 16px; display: none; z-index: 20; box-shadow: 0 -6px 20px rgba(0,0,0,.4); }
+#selectionBar.show { display: block; }
+#selectionBar .inner { max-width: 1180px; margin: 0 auto; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+#selectionBar button { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 8px 18px; cursor: pointer; font-size: 14px; }
+#selectionBar button.ghost { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+
+dialog { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 14px; width: min(1080px, 94vw); max-height: 88vh; padding: 0; }
+dialog::backdrop { background: rgba(0,0,0,.6); }
+.dhead { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); z-index: 2; }
+.dhead h2 { font-size: 16px; }
+.dhead .close { background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 8px; padding: 4px 12px; cursor: pointer; }
+.dbody { padding: 18px; overflow-y: auto; max-height: calc(88vh - 60px); }
+.tabs { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+.tabs .tab { padding: 6px 16px; border-radius: 8px; background: var(--panel2); color: var(--muted); cursor: pointer; border: 1px solid transparent; }
+.tabs .tab.active { background: var(--accent); color: #fff; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.card { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+.card h3 { font-size: 15px; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+.card dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 13px; }
+.card dt { color: var(--muted); } .card dd { text-align: right; font-variant-numeric: tabular-nums; }
+.listbox { margin-top: 10px; }
+.listhead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 10px; flex-wrap: wrap; }
+.listhead input { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; color: var(--text); outline: none; width: 240px; }
+.filelist { max-height: 340px; overflow: auto; background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.filelist .row { display: flex; padding: 3px 10px; gap: 12px; border-bottom: 1px solid rgba(42,47,62,.4); }
+.filelist .row:hover { background: rgba(79,140,255,.08); }
+.filelist .row span:first-child { flex: 1; word-break: break-all; }
+.filelist .row .sz { color: var(--muted); white-space: nowrap; }
+.diff { margin-top: 10px; }
+.diff h4 { margin: 10px 0 6px; }
+.diff h4.add { color: var(--green); } .diff h4.del { color: var(--red); } .diff h4.mod { color: var(--gold); }
+.hint { color: var(--muted); background: var(--panel2); border: 1px dashed var(--border); border-radius: 8px; padding: 10px 14px; font-size: 13px; }
+.loading { text-align: center; color: var(--muted); padding: 30px; }
+footer { margin-top: 40px; color: var(--muted); font-size: 12px; text-align: center; }
+.notice { background: rgba(217,165,63,.08); border: 1px solid rgba(217,165,63,.4); border-radius: 10px; padding: 10px 14px; font-size: 13px; color: #e8cf9a; margin: 14px 0; }
+@media (max-width: 640px) { thead th:nth-child(4), tbody td:nth-child(4), thead th:nth-child(5), tbody td:nth-child(5) { display: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><div class="cube"></div>Minecraft 版本追踪站</h1>
+    <div class="sub">数据来源：Mojang 官方公开 API（piston-meta）。GitHub Actions 每 6 小时自动监测正式版 / 快照 / 愚人节快照更新，并对追踪版本下载 jar 拆包记录内部文件清单。</div>
+  </header>
+
+  <div class="notice">⚖️ 合理使用声明：本站不存储、不分发任何 Minecraft 游戏文件，仅展示 Mojang 公开 API 提供的版本元数据与已拆包版本的文件路径清单。Minecraft 版权归 Mojang Studios 所有。</div>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="toolbar">
+    <div class="chip active" data-type="all">全部</div>
+    <div class="chip" data-type="release">正式版</div>
+    <div class="chip" data-type="snapshot">快照</div>
+    <div class="chip" data-type="april_fools">愚人节</div>
+    <div class="chip" data-type="old_beta">旧测试版</div>
+    <div class="chip" data-type="old_alpha">旧预览版</div>
+    <input class="search" id="search" placeholder="搜索版本 ID…（如 1.21、25w、potato）">
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width:36px"><input type="checkbox" id="checkAll" title="全选/取消本页过滤结果"></th>
+        <th>版本 ID</th><th>类型</th><th>发布时间</th><th>状态</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"><tr><td colspan="5" class="loading">正在加载版本索引…</td></tr></tbody>
+  </table>
+
+  <footer>
+    由 GitHub Actions 自动维护 · 数据仅用于学习研究 ·
+    <a href="https://github.com/xiaowangdeqilin/minecraft-teacker" target="_blank">GitHub 仓库</a> ·
+    未拆包的版本可在仓库 Actions 页手动触发「监测 Minecraft 版本更新」并填入版本 ID 补拆
+  </footer>
+</div>
+
+<div id="selectionBar">
+  <div class="inner">
+    <span id="selCount">已选 0 个版本</span>
+    <button id="btnView">📖 查看所选版本</button>
+    <button id="btnCompare" class="ghost">⚖️ 对比（选 2 个）</button>
+    <button class="ghost" id="btnClear">清空</button>
+  </div>
+</div>
+
+<dialog id="dlg">
+  <div class="dhead"><h2 id="dlgTitle">版本详情</h2><button class="close" onclick="dlg.close()">关闭</button></div>
+  <div class="dbody" id="dlgBody"></div>
+</dialog>
+
+<script>
+const TYPE_ZH = { release:"正式版", snapshot:"快照", april_fools:"愚人节", old_beta:"旧测试版", old_alpha:"旧预览版" };
+const listCache = {};   // id -> parsed listing
+let INDEX = null, filtered = [], selection = new Set(), currentFilter = "all", query = "";
+
+const $ = s => document.querySelector(s);
+const fmtSize = b => b == null ? "—" : (b >= 1e9 ? (b/1e9).toFixed(2)+" GB" : b >= 1e6 ? (b/1e6).toFixed(1)+" MB" : b >= 1e3 ? (b/1e3).toFixed(1)+" KB" : b+" B");
+const fmtTime = s => s ? s.slice(0,10) : "—";
+const esc = s => s.replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+async function loadIndex() {
+  const res = await fetch("data/index.json", { cache: "no-store" });
+  INDEX = await res.json();
+  renderStats(); applyFilter();
+}
+
+function renderStats() {
+  const t = x => INDEX.versions.filter(v => v.type === x).length;
+  const tracked = INDEX.versions.filter(v => v.tracked).length;
+  $("#stats").innerHTML = `
+    <div class="stat"><b>${INDEX.count}</b><span>版本总数</span></div>
+    <div class="stat"><b>${t("release")}</b><span>正式版</span></div>
+    <div class="stat"><b>${t("snapshot")}</b><span>快照</span></div>
+    <div class="stat"><b>${t("april_fools")}</b><span>愚人节快照</span></div>
+    <div class="stat"><b>${tracked}</b><span>已拆包追踪</span></div>
+    <div class="stat"><b>${esc(INDEX.latest.release)}</b><span>最新正式版</span></div>
+    <div class="stat"><b>${esc(INDEX.latest.snapshot)}</b><span>最新快照</span></div>
+    <div class="stat"><b>${fmtTime(INDEX.generatedAt)}</b><span>数据更新时间 (UTC)</span></div>`;
+}
+
+function applyFilter() {
+  query = $("#search").value.trim().toLowerCase();
+  filtered = INDEX.versions.filter(v =>
+    (currentFilter === "all" || v.type === currentFilter) &&
+    (!query || v.id.toLowerCase().includes(query)));
+  const tb = $("#tbody");
+  if (!filtered.length) { tb.innerHTML = `<tr><td colspan="5" class="loading">没有匹配的版本</td></tr>`; return; }
+  tb.innerHTML = filtered.map(v => `
+    <tr>
+      <td><input type="checkbox" data-id="${esc(v.id)}" ${selection.has(v.id) ? "checked" : ""}></td>
+      <td><b>${esc(v.id)}</b>${v.tracked ? '<span class="tag-tracked">已拆包</span>' : ""}</td>
+      <td><span class="badge ${v.type}">${TYPE_ZH[v.type] || v.type}</span></td>
+      <td>${fmtTime(v.releaseTime)}</td>
+      <td class="size">${v.tracked ? "✅ 已拆包" : "仅元数据"}</td>
+    </tr>`).join("");
+  tb.querySelectorAll("input[type=checkbox]").forEach(cb =>
+    cb.addEventListener("change", () => { cb.checked ? selection.add(cb.dataset.id) : selection.delete(cb.dataset.id); updateBar(); }));
+}
+
+function updateBar() {
+  $("#selCount").textContent = `已选 ${selection.size} 个版本`;
+  $("#selectionBar").classList.toggle("show", selection.size > 0);
+}
+
+$("#checkAll").addEventListener("change", e => {
+  if (e.target.checked) filtered.forEach(v => selection.add(v.id)); else selection.clear();
+  applyFilter(); updateBar();
+});
+document.querySelectorAll(".chip").forEach(c => c.addEventListener("click", () => {
+  document.querySelectorAll(".chip").forEach(x => x.classList.remove("active"));
+  c.classList.add("active"); currentFilter = c.dataset.type; applyFilter();
+}));
+$("#search").addEventListener("input", applyFilter);
+$("#btnClear").addEventListener("click", () => { selection.clear(); applyFilter(); updateBar(); });
+$("#btnView").addEventListener("click", () => openDlg("view"));
+$("#btnCompare").addEventListener("click", () => openDlg("compare"));
+$("#dlg").addEventListener("click", e => { if (e.target === $("#dlg")) $("#dlg").close(); });
+
+async function loadListing(id) {
+  if (listCache[id]) return listCache[id];
+  const res = await fetch(`data/versions/${encodeURIComponent(id)}.json.gz`, { cache: "force-cache" });
+  if (!res.ok) throw new Error("清单不存在");
+  let data;
+  if (res.headers.get("content-type") === "application/json") { data = await res.json(); }
+  else {
+    const buf = await res.arrayBuffer();
+    const stream = new Response(buf).body.pipeThrough(new DecompressionStream("gzip"));
+    const text = await new Response(stream).text();
+    data = JSON.parse(text);
+  }
+  listCache[id] = data; return data;
+}
+
+async function openDlg(mode) {
+  const dlg = $("#dlg"), body = $("#dlgBody");
+  const ids = [...selection];
+  if (!ids.length) return;
+  if (mode === "compare") {
+    if (ids.length !== 2) { alert("对比功能需要恰好选择 2 个版本"); return; }
+  }
+  dlg.showModal();
+  body.innerHTML = `<div class="loading">⏳ 正在加载版本数据…</div>`;
+  try {
+    if (mode === "view") await renderView(ids, body);
+    else await renderCompare(ids, body);
+  } catch (e) {
+    body.innerHTML = `<div class="hint">❌ 加载失败：${esc(e.message)}<br>该版本可能尚未拆包——请到仓库 Actions 页手动触发工作流并填入版本 ID 进行补拆。</div>`;
+  }
+}
+
+async function renderView(ids, body) {
+  const cards = [];
+  for (const id of ids) {
+    const v = INDEX.versions.find(x => x.id === id);
+    let extra = "";
+    try {
+      const L = await loadListing(id);
+      extra = `<dt>文件数</dt><dd>${L.fileCount}</dd><dt>解压后</dt><dd>${fmtSize(L.totalUncompressed)}</dd>
+               <dt>client 大小</dt><dd>${fmtSize(L.client.size)}</dd><dt>client SHA1</dt><dd title="${L.client.sha1}">${L.client.sha1.slice(0,12)}…</dd>` +
+               (L.server ? `<dt>server 大小</dt><dd>${fmtSize(L.server.size)}</dd>` : "");
+    } catch { extra = `<dt>状态</dt><dd>未拆包（仅元数据）</dd>`; }
+    cards.push(`<div class="card"><h3>${esc(id)} <span class="badge ${v.type}">${TYPE_ZH[v.type]}</span></h3>
+      <dl><dt>发布时间</dt><dd>${fmtTime(v.releaseTime)}</dd>${extra}</dl>
+      <p style="margin-top:8px"><a href="${v.metaUrl}" target="_blank">官方元数据 JSON ↗</a></p></div>`);
+  }
+  let lists = "";
+  for (const id of ids) {
+    try {
+      const L = await loadListing(id);
+      lists += `<div class="listbox">
+        <div class="listhead"><b>📦 ${esc(id)} 文件清单（${L.fileCount} 个）</b><input placeholder="在清单中搜索…" oninput="filterList(this,'${esc(id)}')"></div>
+        <div class="filelist" id="fl-${esc(id)}">${L.files.slice(0, 800).map(f =>
+          `<div class="row" data-p="${esc(f.p.toLowerCase())}"><span>${esc(f.p)}</span><span class="sz">${fmtSize(f.s)}</span></div>`).join("")}
+          ${L.files.length > 800 ? `<div class="row"><span style="color:var(--muted)">… 其余 ${L.files.length-800} 个文件请用搜索框过滤</span></div>` : ""}</div></div>`;
+    } catch {}
+  }
+  body.innerHTML = `<div class="cards">${cards.join("")}</div>${lists}`;
+}
+
+function filterList(input, id) {
+  const q = input.value.toLowerCase();
+  const rows = document.querySelectorAll(`#fl-${CSS.escape(id)} .row`);
+  let n = 0;
+  rows.forEach(r => { const hit = r.dataset.p.includes(q); r.style.display = hit ? "" : "none"; if (hit) n++; });
+}
+
+async function renderCompare(ids, body) {
+  const [a, b] = ids;
+  const [LA, LB] = await Promise.all([loadListing(a), loadListing(b)]);
+  const ma = new Map(LA.files.map(f => [f.p, f])), mb = new Map(LB.files.map(f => [f.p, f]));
+  const added = [], removed = [], modified = [];
+  mb.forEach((f, p) => { const o = ma.get(p); if (!o) added.push(f); else if (o.c !== f.c) modified.push(f); });
+  ma.forEach((f, p) => { if (!mb.has(p)) removed.push(f); });
+  const pct = n => ((n / ma.size) * 100).toFixed(2) + "%";
+  const rows = arr => arr.slice(0, 300).map(f =>
+    `<div class="row" data-p="${esc(f.p.toLowerCase())}"><span>${esc(f.p)}</span><span class="sz">${fmtSize(f.s)}</span></div>`).join("") +
+    (arr.length > 300 ? `<div class="row"><span style="color:var(--muted)">… 其余 ${arr.length-300} 条</span></div>` : "");
+  body.innerHTML = `
+    <div class="cards">
+      <div class="card"><h3>${esc(a)}（旧）</h3><dl><dt>发布</dt><dd>${fmtTime(LA.releaseTime)}</dd><dt>文件数</dt><dd>${LA.fileCount}</dd><dt>client</dt><dd>${fmtSize(LA.client.size)}</dd></dl></div>
+      <div class="card"><h3>${esc(b)}（新）</h3><dl><dt>发布</dt><dd>${fmtTime(LB.releaseTime)}</dd><dt>文件数</dt><dd>${LB.fileCount}</dd><dt>client</dt><dd>${fmtSize(LB.client.size)}</dd></dl></div>
+    </div>
+    <div class="diff">
+      <h4 class="add">➕ 新增 ${added.length} 个文件</h4><div class="filelist">${rows(added)}</div>
+      <h4 class="del">➖ 移除 ${removed.length} 个文件</h4><div class="filelist">${rows(removed)}</div>
+      <h4 class="mod">🔁 变更 ${modified.length} 个文件（CRC32 不同）</h4><div class="filelist">${rows(modified)}</div>
+    </div>`;
+}
+
+loadIndex().catch(e => {
+  $("#tbody").innerHTML = `<tr><td colspan="5" class="loading">❌ 无法加载 data/index.json：${esc(e.message)}</td></tr>`;
+});
+</script>
+</body>
+</html>
