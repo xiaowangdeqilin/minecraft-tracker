@@ -19,6 +19,8 @@ Minecraft 版本监测与拆包脚本（供 GitHub Actions 定期运行，也可
   TRACK_RELEASES   追踪最近 N 个正式版（默认 30，0 表示只增不减）
   TRACK_SNAPSHOTS  追踪最近 N 个快照（默认 30）
   BACKFILL_VERSION 手动补拆的版本 ID（可逗号分隔多个）
+  EXTRACT_CONTENTS 是否提取可读文本内容（默认 1）
+  FORCE_REPACK     1 时强制重新下载 BACKFILL_VERSION 中的版本（重新生成清单+内容）
 """
 
 import gzip
@@ -35,10 +37,23 @@ from io import BytesIO
 MANIFEST_URL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 VERSIONS_DIR = os.path.join(DATA_DIR, "versions")
+CONTENTS_DIR = os.path.join(DATA_DIR, "contents")
 
 TRACK_RELEASES = int(os.environ.get("TRACK_RELEASES", "30"))
 TRACK_SNAPSHOTS = int(os.environ.get("TRACK_SNAPSHOTS", "30"))
 BACKFILL = [v.strip() for v in os.environ.get("BACKFILL_VERSION", "").split(",") if v.strip()]
+EXTRACT_CONTENTS = os.environ.get("EXTRACT_CONTENTS", "1") != "0"
+FORCE_REPACK = os.environ.get("FORCE_REPACK", "0") == "1"
+
+# 可读文本类扩展名：这些文件的内容会被提取供页面查看（遵循合理使用，仅限小型文本）
+TEXT_EXTS = {
+    ".json", ".mcmeta", ".txt", ".lang", ".properties", ".csv", ".cfg",
+    ".toml", ".yml", ".yaml", ".md", ".proto", ".fsh", ".vsh", ".glsl",
+    ".motd", ".version", ".license", ".log", ".accesswidener",
+}
+# 单文件与单版本总量上限（原始字节），避免仓库膨胀
+MAX_FILE_BYTES = 4 * 1024 * 1024      # 单个文本文件 ≤ 4MB（如语言文件 en_us.json）
+MAX_TOTAL_BYTES = 20 * 1024 * 1024    # 每版本提取总量 ≤ 20MB
 
 # 愚人节版本 ID（均在官方清单中以 snapshot 类型出现）
 APRIL_FOOLS_IDS = {
@@ -120,9 +135,10 @@ def main():
     all_versions = manifest["versions"]
     print(f"清单共 {len(all_versions)} 个版本，latest={manifest['latest']}")
 
-    state = load_json(os.path.join(DATA_DIR, "state.json"), {"known_ids": [], "unpacked": {}})
+    state = load_json(os.path.join(DATA_DIR, "state.json"), {"known_ids": [], "unpacked": {}, "contents": {}})
     known_ids = set(state.get("known_ids", []))
     unpacked = state.get("unpacked", {})
+    contents = state.get("contents", {})
 
     # ---------- 1. 全量元数据索引 ----------
     index = []
@@ -154,8 +170,18 @@ def main():
     wanted |= {v["id"] for v in all_versions if classify(v) == "april_fools"}
     wanted |= set(BACKFILL)
     # 已拆包过的版本不重复下载（除非其 jar sha1 变化，官方极少发生）
-    todo = sorted(w for w in wanted if w not in unpacked and w in by_id)
-    print(f"需拆包 {len(todo)} 个：{todo}")
+    todo = set(w for w in wanted if w not in unpacked and w in by_id)
+    # FORCE_REPACK=1：强制重新下载 BACKFILL 中的版本（重新生成清单与内容）
+    if FORCE_REPACK:
+        todo |= {b for b in BACKFILL if b in by_id}
+    todo = sorted(todo)
+    print(f"需处理 {len(todo)} 个：{todo}")
+
+    # 内容提取范围：最新正式版 / 最新快照 / 全部愚人节版 / BACKFILL 指定版本 /
+    # 以及本次新拆包的版本（今后每个新版本都会带内容）。旧版本不再回溯，避免仓库膨胀。
+    unpacked_before = set(unpacked)
+    latest_r, latest_s = manifest["latest"].get("release"), manifest["latest"].get("snapshot")
+    content_ids = {latest_r, latest_s} | {v["id"] for v in all_versions if classify(v) == "april_fools"} | set(BACKFILL)
 
     # ---------- 3. 逐个下载 & 拆包 ----------
     for vid in todo:
@@ -174,16 +200,36 @@ def main():
             zf = zipfile.ZipFile(BytesIO(jar_bytes))
             entries = []
             total_uncompressed = 0
+            text_contents = {}
+            truncated = False
+            need_content = EXTRACT_CONTENTS and (vid not in unpacked_before or vid in content_ids)
+            text_total = 0
             for zi in zf.infolist():
                 if zi.is_dir():
                     continue
                 total_uncompressed += zi.file_size
-                entries.append({
+                entry = {
                     "p": zi.filename,                # path
                     "s": zi.file_size,               # size (bytes)
                     "c": f"{zi.CRC:08x}",            # crc32
                     "t": list(zi.date_time),         # timestamp
-                })
+                }
+                # 提取小型可读文本内容（遵循合理使用：仅限文本类、有大小上限）
+                if need_content and text_total < MAX_TOTAL_BYTES \
+                        and os.path.splitext(zi.filename)[1].lower() in TEXT_EXTS \
+                        and 0 < zi.file_size <= MAX_FILE_BYTES:
+                    try:
+                        raw = zf.read(zi.filename)
+                        text = raw.decode("utf-8", errors="replace")
+                        text_contents[zi.filename] = text
+                        text_total += zi.file_size
+                        entry["x"] = 1               # 标记：内容已收录
+                    except Exception:
+                        pass
+                elif need_content and os.path.splitext(zi.filename)[1].lower() in TEXT_EXTS \
+                        and zi.file_size > MAX_FILE_BYTES:
+                    truncated = True
+                entries.append(entry)
             zf.close()
 
             listing = {
@@ -195,12 +241,26 @@ def main():
                            if server.get("url") else None),
                 "fileCount": len(entries),
                 "totalUncompressed": total_uncompressed,
+                "hasContents": bool(text_contents),
                 "files": entries,
             }
             safe_name = vid.replace("/", "_")
             save_json(os.path.join(VERSIONS_DIR, f"{safe_name}.json.gz"), listing, compress=True)
             unpacked[vid] = sha1
             state["unpacked"] = unpacked
+
+            # 写出文本内容文件（懒加载给页面用）
+            if need_content and text_contents:
+                save_json(os.path.join(CONTENTS_DIR, f"{safe_name}.json.gz"), {
+                    "id": vid,
+                    "truncated": truncated,
+                    "files": text_contents,
+                }, compress=True)
+                contents[vid] = sha1
+                state["contents"] = contents
+                print(f"  内容: {len(text_contents)} 个文本文件, "
+                      f"{os.path.getsize(os.path.join(CONTENTS_DIR, safe_name + '.json.gz'))/1024:.0f} KB")
+
             save_json(os.path.join(DATA_DIR, "state.json"), state)
             print(f"  完成 {vid}: {len(entries)} 个文件, jar {client.get('size', len(jar_bytes))/1e6:.1f} MB, "
                   f"清单 {os.path.getsize(os.path.join(VERSIONS_DIR, safe_name + '.json.gz'))/1024:.0f} KB")
@@ -210,6 +270,7 @@ def main():
     # ---------- 4. 给索引补充拆包信息并写出 ----------
     for item in index:
         item["tracked"] = item["id"] in unpacked
+        item["contents"] = item["id"] in contents
     idx_path = os.path.join(DATA_DIR, "index.json")
     save_json(idx_path, {
         "generatedAt": __import__("datetime").datetime.utcnow().isoformat() + "Z",
