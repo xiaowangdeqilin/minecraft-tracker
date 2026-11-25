@@ -1,10 +1,10 @@
-# minecraft-teacker · Minecraft 版本追踪站
+# minecraft-tracker · Minecraft 版本追踪站
 
 定期监测 Minecraft 的版本更新（**正式版 / 快照 / 愚人节快照**），自动下载并对版本 jar 进行"拆包"分析，把全部版本元数据与文件清单展示在 GitHub Pages 上，支持**多选版本同时查看与对比**。
 
 ## 在线访问
 
-- 站点地址：`https://xiaowangdeqilin.github.io/minecraft-teacker/`（Actions 首次运行后自动开通）
+- 站点地址：`https://xiaowangdeqilin.github.io/minecraft-tracker/`
 - 数据更新：GitHub Actions **每 6 小时**自动运行一次
 
 ## 功能
