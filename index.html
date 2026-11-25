@@ -52,8 +52,9 @@ h1 .cube { width: 28px; height: 28px; background: linear-gradient(135deg, var(--
 .search { flex: 1; min-width: 200px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; color: var(--text); outline: none; }
 .search:focus { border-color: var(--accent); }
 
-table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
-thead th { text-align: left; padding: 10px 12px; background: var(--panel2); color: var(--muted); font-size: 12px; font-weight: 600; position: sticky; top: 48px; z-index: 2; }
+.table-wrap { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+thead th { text-align: left; padding: 10px 12px; background: var(--panel2); color: var(--muted); font-size: 12px; font-weight: 600; }
 tbody td { padding: 8px 12px; border-top: 1px solid var(--border); }
 tbody tr { transition: background .1s; }
 tbody tr:hover { background: rgba(79,140,255,.07); }
@@ -112,6 +113,18 @@ html[data-theme="dark"] .notice { color: #e8cf9a; }
 .fbar button { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
 .fbar button.ghost { background: transparent; border: 1px solid var(--border); color: var(--muted); }
 mark { background: var(--gold); color: #111; border-radius: 2px; }
+/* 客户端/服务端切换按钮 */
+.sidebtn { display: inline-block; padding: 4px 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel2); color: var(--muted); font-size: 13px; cursor: pointer; user-select: none; }
+.sidebtn.active { background: var(--accent); color: #fff; border-color: transparent; }
+.sidebtn.disabled { opacity: .45; cursor: not-allowed; }
+/* 分页栏 */
+.pager { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 14px 0 0; color: var(--muted); font-size: 13px; }
+.pager button { background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 5px 12px; cursor: pointer; font-size: 13px; }
+.pager button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.pager button:disabled { opacity: .4; cursor: not-allowed; }
+.pager button.cur { background: var(--accent); color: #fff; border-color: transparent; }
+.pager select { background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 5px 8px; font-size: 13px; outline: none; }
+.pager .pages { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 @media (max-width: 640px) { thead th:nth-child(4), tbody td:nth-child(4), thead th:nth-child(5), tbody td:nth-child(5) { display: none; } }
 </style>
 </head>
@@ -139,27 +152,30 @@ mark { background: var(--gold); color: #111; border-radius: 2px; }
     <input class="search" id="search" placeholder="搜索版本 ID…（如 1.21、25w、potato）">
   </div>
 
+<div class="table-wrap">
   <table>
     <thead>
       <tr>
-        <th style="width:36px"><input type="checkbox" id="checkAll" title="全选/取消当前过滤结果"></th>
+        <th style="width:36px"><input type="checkbox" id="checkAll" title="全选/取消当前页"></th>
         <th>版本 ID</th><th>类型</th><th>发布时间</th><th>状态</th>
       </tr>
     </thead>
     <tbody id="tbody"><tr><td colspan="5" class="loading">正在加载版本索引…</td></tr></tbody>
   </table>
+</div>
+<div class="pager" id="pager"></div>
 
   <footer>
     由 GitHub Actions 自动维护 · 数据仅用于学习研究 ·
     <a href="https://github.com/xiaowangdeqilin/minecraft-teacker" target="_blank">GitHub 仓库</a> ·
-    点击带 <span class="ic" style="color:var(--accent)">📄</span> 的文件可查看文本内容 ·
-    未拆包的版本可在仓库 Actions 页手动触发工作流并填入版本 ID 补拆
+    🖥 客户端 / 🗄 服务端 可切换查看 · 点击带 📄 的文件查看文本内容 ·
+    未收录的版本可在仓库 Actions 页手动触发工作流补拆
   </footer>
 </div>
 
 <div id="selectionBar">
   <div class="inner">
-    <span id="selCount">已选 0 个版本</span>
+    <span id="selCount" style="color:var(--text)">已选 0 个版本</span>
     <button id="btnView">📖 查看所选版本</button>
     <button id="btnCompare" class="ghost">⚖️ 对比（选 2 个）</button>
     <button class="ghost" id="btnClear">清空</button>
@@ -178,9 +194,13 @@ mark { background: var(--gold); color: #111; border-radius: 2px; }
 
 <script>
 const TYPE_ZH = { release:"正式版", snapshot:"快照", april_fools:"愚人节", old_beta:"旧测试版", old_alpha:"旧预览版" };
-const listCache = {};    // id -> listing
-const contentCache = {}; // id -> contents json
+const listCache = {};    // url -> listing（客户端与服务端清单都存这里）
+const contentCache = {}; // url -> contents json
 let INDEX = null, filtered = [], selection = new Set(), currentFilter = "all";
+let pageSize = localStorage.getItem("mc-page-size") || "50";   // 每页条数，"all" = 全部
+let page = 1;
+const viewSide = {};          // 查看对话框中每个版本当前的端
+const compareSide = { side: "client" };
 
 const $ = s => document.querySelector(s);
 const fmtSize = b => b == null ? "—" : (b >= 1e9 ? (b/1e9).toFixed(2)+" GB" : b >= 1e6 ? (b/1e6).toFixed(1)+" MB" : b >= 1e3 ? (b/1e3).toFixed(1)+" KB" : b+" B");
@@ -213,8 +233,10 @@ async function fetchGz(url, cache) {
   }
   cache[url] = data; return data;
 }
-const loadListing = id => fetchGz(`data/versions/${encodeURIComponent(id)}.json.gz`, listCache);
-const loadContents = id => fetchGz(`data/contents/${encodeURIComponent(id)}.json.gz`, contentCache);
+const loadListing = (id, side = "client") => fetchGz(
+  `data/versions/${encodeURIComponent(id)}${side === "server" ? ".server" : ""}.json.gz`, listCache);
+const loadContents = (id, side = "client") => fetchGz(
+  `data/contents/${encodeURIComponent(id)}${side === "server" ? ".server" : ""}.json.gz`, contentCache);
 
 async function loadIndex() {
   const res = await fetch("data/index.json", { cache: "no-store" });
@@ -226,16 +248,76 @@ function renderStats() {
   const t = x => INDEX.versions.filter(v => v.type === x).length;
   const tracked = INDEX.versions.filter(v => v.tracked).length;
   const withContent = INDEX.versions.filter(v => v.contents).length;
+  const serverTracked = INDEX.versions.filter(v => v.server).length;
   $("#stats").innerHTML = `
     <div class="stat"><b>${INDEX.count}</b><span>版本总数</span></div>
     <div class="stat"><b>${t("release")}</b><span>正式版</span></div>
     <div class="stat"><b>${t("snapshot")}</b><span>快照</span></div>
     <div class="stat"><b>${t("april_fools")}</b><span>愚人节快照</span></div>
-    <div class="stat"><b>${tracked}</b><span>已拆包追踪</span></div>
+    <div class="stat"><b>${tracked}</b><span>客户端已拆包</span></div>
+    <div class="stat"><b>${serverTracked}</b><span>服务端已拆包</span></div>
     <div class="stat"><b>${withContent}</b><span>可查看文件内容</span></div>
     <div class="stat"><b>${esc(INDEX.latest.release)}</b><span>最新正式版</span></div>
     <div class="stat"><b>${esc(INDEX.latest.snapshot)}</b><span>最新快照</span></div>
     <div class="stat"><b>${fmtTime(INDEX.generatedAt)}</b><span>数据更新时间 (UTC)</span></div>`;
+}
+
+/* ---------- 分页 ---------- */
+function pageSizeNum() { return pageSize === "all" ? filtered.length || 1 : parseInt(pageSize, 10); }
+function totalPages() { return Math.max(1, Math.ceil(filtered.length / pageSizeNum())); }
+
+function renderPager() {
+  const el = $("#pager");
+  const total = totalPages();
+  if (page > total) page = total;
+  const opts = [25, 50, 100, 500].map(n =>
+    `<option value="${n}" ${pageSize === String(n) ? "selected" : ""}>每页 ${n} 条</option>`).join("");
+  const sizeSel = `<select id="pageSizeSel" title="设置每页显示数量">
+    ${opts}<option value="all" ${pageSize === "all" ? "selected" : ""}>显示全部</option></select>`;
+  if (pageSize === "all" || filtered.length <= pageSizeNum()) {
+    el.innerHTML = `<span>共 ${filtered.length} 个版本</span>${sizeSel}`;
+  } else {
+    const nums = [];
+    const add = n => nums.push(`<button data-page="${n}" class="${n === page ? "cur" : ""}">${n}</button>`);
+    add(Math.max(1, page - 1) === 1 ? 1 : -1); // 占位，下面统一生成
+    nums.length = 0;
+    const windowStart = Math.max(1, page - 2), windowEnd = Math.min(total, page + 2);
+    if (windowStart > 1) { add(1); if (windowStart > 2) nums.push(`<span>…</span>`); }
+    for (let n = windowStart; n <= windowEnd; n++) add(n);
+    if (windowEnd < total) { if (windowEnd < total - 1) nums.push(`<span>…</span>`); add(total); }
+    el.innerHTML = `<span>共 ${filtered.length} 个版本</span>${sizeSel}
+      <button id="pgPrev" ${page <= 1 ? "disabled" : ""}>‹ 上一页</button>
+      <span class="pages">${nums.join("")}</span>
+      <button id="pgNext" ${page >= total ? "disabled" : ""}>下一页 ›</button>
+      <span>第 ${page} / ${total} 页</span>`;
+    $("#pgPrev").onclick = () => { page--; renderTable(); renderPager(); };
+    $("#pgNext").onclick = () => { page++; renderTable(); renderPager(); };
+    el.querySelectorAll("button[data-page]").forEach(b =>
+      b.onclick = () => { page = parseInt(b.dataset.page, 10); renderTable(); renderPager(); });
+  }
+  $("#pageSizeSel").addEventListener("change", e => {
+    pageSize = e.target.value; localStorage.setItem("mc-page-size", pageSize); page = 1;
+    renderTable(); renderPager();
+  });
+}
+
+function renderTable() {
+  const tb = $("#tbody");
+  if (!filtered.length) { tb.innerHTML = `<tr><td colspan="5" class="loading">没有匹配的版本</td></tr>`; return; }
+  const size = pageSizeNum();
+  const slice = filtered.slice((page - 1) * size, page * size);
+  tb.innerHTML = slice.map(v => `
+    <tr>
+      <td><input type="checkbox" data-id="${esc(v.id)}" ${selection.has(v.id) ? "checked" : ""}></td>
+      <td><b>${esc(v.id)}</b>${v.tracked ? '<span class="tag-tracked">已拆包</span>' : ""}${v.contents ? '<span class="tag-contents">含内容</span>' : ""}</td>
+      <td><span class="badge ${v.type}">${TYPE_ZH[v.type] || v.type}</span></td>
+      <td>${fmtTime(v.releaseTime)}</td>
+      <td class="size">${v.tracked
+        ? `✅ 已拆包${v.server ? " 🖥 服务端" : ""}${v.contents ? " 📄 内容" : ""}`
+        : "仅元数据"}</td>
+    </tr>`).join("");
+  tb.querySelectorAll("input[type=checkbox]").forEach(cb =>
+    cb.addEventListener("change", () => { cb.checked ? selection.add(cb.dataset.id) : selection.delete(cb.dataset.id); updateBar(); }));
 }
 
 function applyFilter() {
@@ -243,18 +325,8 @@ function applyFilter() {
   filtered = INDEX.versions.filter(v =>
     (currentFilter === "all" || v.type === currentFilter) &&
     (!query || v.id.toLowerCase().includes(query)));
-  const tb = $("#tbody");
-  if (!filtered.length) { tb.innerHTML = `<tr><td colspan="5" class="loading">没有匹配的版本</td></tr>`; return; }
-  tb.innerHTML = filtered.map(v => `
-    <tr>
-      <td><input type="checkbox" data-id="${esc(v.id)}" ${selection.has(v.id) ? "checked" : ""}></td>
-      <td><b>${esc(v.id)}</b>${v.tracked ? '<span class="tag-tracked">已拆包</span>' : ""}${v.contents ? '<span class="tag-contents">含内容</span>' : ""}</td>
-      <td><span class="badge ${v.type}">${TYPE_ZH[v.type] || v.type}</span></td>
-      <td>${fmtTime(v.releaseTime)}</td>
-      <td class="size">${v.tracked ? (v.contents ? "✅ 已拆包 + 内容" : "✅ 已拆包") : "仅元数据"}</td>
-    </tr>`).join("");
-  tb.querySelectorAll("input[type=checkbox]").forEach(cb =>
-    cb.addEventListener("change", () => { cb.checked ? selection.add(cb.dataset.id) : selection.delete(cb.dataset.id); updateBar(); }));
+  if (page > totalPages()) page = 1;
+  renderTable(); renderPager();
 }
 
 function updateBar() {
@@ -263,12 +335,15 @@ function updateBar() {
 }
 
 $("#checkAll").addEventListener("change", e => {
-  if (e.target.checked) filtered.forEach(v => selection.add(v.id)); else selection.clear();
-  applyFilter(); updateBar();
+  // 全选/取消当前页
+  const size = pageSizeNum();
+  const slice = filtered.slice((page - 1) * size, page * size);
+  if (e.target.checked) slice.forEach(v => selection.add(v.id)); else slice.forEach(v => selection.delete(v.id));
+  renderTable(); updateBar();
 });
 document.querySelectorAll(".chip").forEach(c => c.addEventListener("click", () => {
   document.querySelectorAll(".chip").forEach(x => x.classList.remove("active"));
-  c.classList.add("active"); currentFilter = c.dataset.type; applyFilter();
+  c.classList.add("active"); currentFilter = c.dataset.type; page = 1; applyFilter();
 }));
 $("#search").addEventListener("input", applyFilter);
 $("#btnClear").addEventListener("click", () => { selection.clear(); applyFilter(); updateBar(); });
@@ -294,6 +369,20 @@ async function openDlg(mode) {
   }
 }
 
+async function openDlgSafe(mode) {
+  const dlg = $("#dlg");
+  if (!dlg.open) dlg.showModal();
+  const body = $("#dlgBody");
+  const ids = [...selection];
+  body.innerHTML = `<div class="loading">⏳ 正在加载版本数据…</div>`;
+  try {
+    if (mode === "view") await renderView(ids, body);
+    else await renderCompare(ids, body);
+  } catch (e) {
+    body.innerHTML = `<div class="hint">❌ 加载失败：${esc(e.message)}</div>`;
+  }
+}
+
 async function renderView(ids, body) {
   const cards = [];
   for (const id of ids) {
@@ -301,9 +390,10 @@ async function renderView(ids, body) {
     let extra = "";
     try {
       const L = await loadListing(id);
+      const other = L.other || L.server;
       extra = `<dt>文件数</dt><dd>${L.fileCount}</dd><dt>解压后</dt><dd>${fmtSize(L.totalUncompressed)}</dd>
-               <dt>client 大小</dt><dd>${fmtSize(L.client.size)}</dd><dt>client SHA1</dt><dd title="${L.client.sha1}">${L.client.sha1.slice(0,12)}…</dd>` +
-               (L.server ? `<dt>server 大小</dt><dd>${fmtSize(L.server.size)}</dd>` : "") +
+               <dt>jar 大小</dt><dd>${fmtSize(L.client.size)}</dd><dt>SHA1</dt><dd title="${L.client.sha1}">${L.client.sha1.slice(0,12)}…</dd>` +
+               (other && other.size ? `<dt>对端 jar 大小</dt><dd>${fmtSize(other.size)}</dd>` : "") +
                (L.hasContents ? `<dt>文本内容</dt><dd>✅ 已收录</dd>` : "");
     } catch { extra = `<dt>状态</dt><dd>未拆包（仅元数据）</dd>`; }
     cards.push(`<div class="card"><h3>${esc(id)} <span class="badge ${v.type}">${TYPE_ZH[v.type]}</span></h3>
@@ -312,85 +402,107 @@ async function renderView(ids, body) {
   }
   let lists = "";
   for (const id of ids) {
-    try {
-      const L = await loadListing(id);
-      lists += `<div class="listbox">
-        <div class="listhead"><b>📦 ${esc(id)} 文件清单（${L.fileCount} 个，点击文件名查看内容）</b>
-          <input placeholder="全量搜索：如 en_us / pack.mcmeta / shader…" oninput="filterList('${esc(id)}', this.value)"></div>
-        <div class="filelist" id="fl-${esc(id)}">${renderFileRows(id, 0, 800)}</div>
-        <div style="margin-top:8px;text-align:center"><button class="fbar-ghost" id="more-${esc(id)}"
-          style="background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:8px;padding:6px 16px;cursor:pointer"
-          onclick="loadMore('${esc(id)}')">加载更多（已显示 ${Math.min(800, L.fileCount)} / ${L.fileCount}）</button></div></div>`;
-    } catch {}
+    // 预取客户端清单；服务端可切换时懒加载
+    let clientOK = true, serverOK = false;
+    try { const L = await loadListing(id); } catch { clientOK = false; }
+    try { await loadListing(id, "server"); serverOK = true; } catch {}
+    if (!viewSide[id]) viewSide[id] = clientOK ? "client" : (serverOK ? "server" : "client");
+    if (viewSide[id] === "server" && !serverOK) viewSide[id] = "client";
+    const cur = viewSide[id];
+    const sideBtn = `
+      <span class="sidebtn ${cur === "client" ? "active" : clientOK ? "" : "disabled"}" ${clientOK ? `onclick="switchSide('${esc(id)}','client')"` : ""}>🖥 客户端</span>
+      <span class="sidebtn ${cur === "server" ? "active" : serverOK ? "" : "disabled"}" ${serverOK ? `onclick="switchSide('${esc(id)}','server')"` : ""}>🗄 服务端${serverOK ? "" : "（未收录）"}</span>`;
+    const L = clientOK ? await loadListing(id) : null;
+    lists += `<div class="listbox">
+      <div class="listhead"><b>📦 ${esc(id)} 文件清单${L ? `（${L.fileCount} 个，点击文件名查看内容）` : ""}</b>
+        <span style="display:inline-flex;gap:6px">${sideBtn}</span>
+        <input placeholder="全量搜索：如 en_us / pack.mcmeta / shader…" oninput="filterList('${esc(id)}', this.value)"></div>
+      <div class="filelist" id="fl-${esc(id)}">${L ? renderFileRows(id, 0, CHUNK) : `<div class="row" style="cursor:default"><span style="color:var(--muted)">该端清单尚未收录</span></div>`}</div>
+      ${L ? `<div style="margin-top:8px;text-align:center"><button id="more-${esc(id)}"
+        style="background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:8px;padding:6px 16px;cursor:pointer"
+        onclick="loadMore('${esc(id)}')">加载更多（已显示 ${Math.min(CHUNK, L.fileCount)} / ${L.fileCount}）</button></div>` : ""}</div>`;
   }
   body.innerHTML = `<div class="cards">${cards.join("")}</div>${lists}`;
 }
 
+function switchSide(id, side) {
+  if (viewSide[id] === side) return;
+  viewSide[id] = side;
+  openDlgSafe("view");  // 对话框已打开，直接重渲染
+}
+
 const CHUNK = 800;
-const shown = {}; // id -> 当前渲染数量
-function renderFileRows(id, start, n) {
-  const L = listCache[`data/versions/${encodeURIComponent(id)}.json.gz`];
+const shown = {}; // `${side}:${id}` -> 当前渲染数量
+function listingCacheKey(id, side) {
+  return `data/versions/${encodeURIComponent(id)}${side === "server" ? ".server" : ""}.json.gz`;
+}
+function renderFileRows(id, start, n, side = viewSide[id] || "client") {
+  const L = listCache[listingCacheKey(id, side)];
   if (!L) return "";
   const end = Math.min(start + n, L.files.length);
   let html = "";
   for (let i = start; i < end; i++) {
     const f = L.files[i];
-    html += `<div class="row" data-p="${esc(f.p.toLowerCase())}" data-i="${i}" onclick="openFile('${esc(id)}',${i})">
+    html += `<div class="row" data-p="${esc(f.p.toLowerCase())}" data-i="${i}" onclick="openFile('${esc(id)}',${i},'${side}')">
       <span class="ic">${f.x ? "📄" : "·"}</span><span>${esc(f.p)}</span><span class="sz">${fmtSize(f.s)}</span></div>`;
   }
   return html;
 }
 function loadMore(id) {
-  shown[id] = (shown[id] || CHUNK) + CHUNK;
+  const side = viewSide[id] || "client";
+  const key = side + ":" + id;
+  shown[key] = (shown[key] || CHUNK) + CHUNK;
   const el = document.getElementById("fl-" + id);
-  el.innerHTML = renderFileRows(id, 0, shown[id]);
-  const L = listCache[`data/versions/${encodeURIComponent(id)}.json.gz`];
+  el.innerHTML = renderFileRows(id, 0, shown[key], side);
+  const L = listCache[listingCacheKey(id, side)];
   const btn = document.getElementById("more-" + id);
   if (btn) {
-    if (shown[id] >= L.fileCount) btn.remove();
-    else btn.textContent = `加载更多（已显示 ${shown[id]} / ${L.fileCount}）`;
+    if (shown[key] >= L.fileCount) btn.remove();
+    else btn.textContent = `加载更多（已显示 ${shown[key]} / ${L.fileCount}）`;
   }
 }
 function filterList(id, q) {
-  const L = listCache[`data/versions/${encodeURIComponent(id)}.json.gz`];
+  const side = viewSide[id] || "client";
+  const L = listCache[listingCacheKey(id, side)];
   if (!L) return;
   const el = document.getElementById("fl-" + id);
   const btn = document.getElementById("more-" + id);
   q = q.trim().toLowerCase();
-  if (!q) { shown[id] = CHUNK; el.innerHTML = renderFileRows(id, 0, CHUNK); if (btn) btn.style.display = ""; return; }
+  if (!q) { shown[side + ":" + id] = CHUNK; el.innerHTML = renderFileRows(id, 0, CHUNK, side); if (btn) btn.style.display = ""; return; }
   const matches = [];
   for (let i = 0; i < L.files.length && matches.length < 500; i++) {
     if (L.files[i].p.toLowerCase().includes(q)) matches.push(i);
   }
   el.innerHTML = matches.map(i => {
     const f = L.files[i];
-    return `<div class="row" data-p="${esc(f.p.toLowerCase())}" data-i="${i}" onclick="openFile('${esc(id)}',${i})">
+    return `<div class="row" data-p="${esc(f.p.toLowerCase())}" data-i="${i}" onclick="openFile('${esc(id)}',${i},'${side}')">
       <span class="ic">${f.x ? "📄" : "·"}</span><span>${esc(f.p)}</span><span class="sz">${fmtSize(f.s)}</span></div>`;
   }).join("") + (matches.length >= 500 ? `<div class="row" style="cursor:default"><span style="color:var(--muted)">… 匹配过多，仅显示前 500 条，请细化关键词</span></div>` : "");
   if (btn) btn.style.display = "none";
 }
 
 /* ---------- 文件内容查看器 ---------- */
-async function openFile(id, i) {
-  const L = await loadListing(id);
+async function openFile(id, i, side = viewSide[id] || "client") {
+  const L = await loadListing(id, side);
   const f = L.files[i];
   if (!f) return;
   const dlg = $("#fileDlg"), body = $("#fileBody");
   $("#fileTitle").textContent = f.p;
-  dlg.showModal();
+  if (!dlg.open) dlg.showModal();
   body.innerHTML = `<div class="loading">⏳ 正在加载文件内容…</div>`;
   const meta = `<div class="fmeta">
       <span>版本 <b>${esc(id)}</b></span>
+      <span>端 <b>${side === "server" ? "服务端" : "客户端"}</b></span>
       <span>大小 <b>${fmtSize(f.s)}</b></span>
       <span>CRC32 <b>${f.c}</b></span>
       <span>路径 <b style="word-break:break-all">${esc(f.p)}</b></span>
     </div>`;
   if (!f.x) {
-    body.innerHTML = meta + `<div class="hint">该文件的内容未收录。本站只提取小型可读文本（JSON / 语言文件 / 配置 / 着色器等，单个 ≤ 4MB），二进制文件（class / png / 音频等）不收录。此版本若未标记"含内容"，可在仓库 Actions 页手动触发工作流补拆。</div>`;
+    body.innerHTML = meta + `<div class="hint">该文件的内容未收录。本站只提取小型可读文本（JSON / 语言文件 / 配置 / 着色器等，单个 ≤ 4MB），二进制文件（class / png / 音频等）不收录。</div>`;
     return;
   }
   try {
-    const C = await loadContents(id);
+    const C = await loadContents(id, side);
     const text = C.files[f.p];
     if (text === undefined) {
       body.innerHTML = meta + `<div class="hint">内容索引中找不到该文件（可能因每版本提取总量上限被截断）。</div>`;
@@ -440,24 +552,47 @@ function copyContent() {
 /* ---------- 版本对比 ---------- */
 async function renderCompare(ids, body) {
   const [a, b] = ids;
-  const [LA, LB] = await Promise.all([loadListing(a), loadListing(b)]);
+  const side = compareSide.side;
+  let LA, LB, serverAvailable = false;
+  try {
+    LA = await loadListing(a, side); LB = await loadListing(b, side);
+    serverAvailable = side === "server";
+  } catch (e) {
+    if (side === "server") { compareSide.side = "client"; return renderCompare(ids, body); }
+    throw e;
+  }
+  if (side === "client") {
+    try { await Promise.all([loadListing(a, "server"), loadListing(b, "server")]); serverAvailable = true; } catch {}
+  }
   const ma = new Map(LA.files.map(f => [f.p, f])), mb = new Map(LB.files.map(f => [f.p, f]));
   const added = [], removed = [], modified = [];
   mb.forEach((f, p) => { const o = ma.get(p); if (!o) added.push(f); else if (o.c !== f.c) modified.push(f); });
   ma.forEach((f, p) => { if (!mb.has(p)) removed.push(f); });
+  const sideBtn = `<div class="fbar" style="margin-bottom:12px">
+      <span style="color:var(--muted)">对比端：</span>
+      <span class="sidebtn ${side === "client" ? "active" : ""}" onclick="switchCompareSide('client')">🖥 客户端</span>
+      <span class="sidebtn ${side === "server" ? "active" : serverAvailable ? "" : "disabled"}" ${serverAvailable ? `onclick="switchCompareSide('server')"` : ""}>🗄 服务端${serverAvailable ? "" : "（未收录）"}</span>
+    </div>`;
   const rows = arr => arr.slice(0, 300).map(f =>
     `<div class="row" style="cursor:default" data-p="${esc(f.p.toLowerCase())}"><span>${esc(f.p)}</span><span class="sz">${fmtSize(f.s)}</span></div>`).join("") +
     (arr.length > 300 ? `<div class="row" style="cursor:default"><span style="color:var(--muted)">… 其余 ${arr.length-300} 条</span></div>` : "");
   body.innerHTML = `
+    ${sideBtn}
     <div class="cards">
-      <div class="card"><h3>${esc(a)}（旧）</h3><dl><dt>发布</dt><dd>${fmtTime(LA.releaseTime)}</dd><dt>文件数</dt><dd>${LA.fileCount}</dd><dt>client</dt><dd>${fmtSize(LA.client.size)}</dd></dl></div>
-      <div class="card"><h3>${esc(b)}（新）</h3><dl><dt>发布</dt><dd>${fmtTime(LB.releaseTime)}</dd><dt>文件数</dt><dd>${LB.fileCount}</dd><dt>client</dt><dd>${fmtSize(LB.client.size)}</dd></dl></div>
+      <div class="card"><h3>${esc(a)}（旧·${side === "server" ? "服务端" : "客户端"}）</h3><dl><dt>发布</dt><dd>${fmtTime(LA.releaseTime)}</dd><dt>文件数</dt><dd>${LA.fileCount}</dd><dt>jar</dt><dd>${fmtSize(LA.client.size)}</dd></dl></div>
+      <div class="card"><h3>${esc(b)}（新·${side === "server" ? "服务端" : "客户端"}）</h3><dl><dt>发布</dt><dd>${fmtTime(LB.releaseTime)}</dd><dt>文件数</dt><dd>${LB.fileCount}</dd><dt>jar</dt><dd>${fmtSize(LB.client.size)}</dd></dl></div>
     </div>
     <div class="diff">
       <h4 class="add">➕ 新增 ${added.length} 个文件</h4><div class="filelist">${rows(added)}</div>
       <h4 class="del">➖ 移除 ${removed.length} 个文件</h4><div class="filelist">${rows(removed)}</div>
       <h4 class="mod">🔁 变更 ${modified.length} 个文件（CRC32 不同）</h4><div class="filelist">${rows(modified)}</div>
     </div>`;
+}
+
+function switchCompareSide(side) {
+  if (compareSide.side === side) return;
+  compareSide.side = side;
+  openDlgSafe("compare");
 }
 
 loadIndex().catch(e => {

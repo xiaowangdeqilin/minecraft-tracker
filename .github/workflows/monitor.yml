@@ -27,17 +27,18 @@ jobs:
     outputs:
       has_new: ${{ steps.result.outputs.has_new }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: "3.13"
 
       - name: 拉取版本清单并拆包
         env:
           BACKFILL_VERSION: ${{ github.event.inputs.backfill_version }}
-          TRACK_RELEASES: "30"
-          TRACK_SNAPSHOTS: "30"
+          # 全量追踪：不再限制数量（99999 = 全部）
+          TRACK_RELEASES: "99999"
+          TRACK_SNAPSHOTS: "99999"
         run: python scripts/fetch_versions.py
 
       - name: 记录结果
@@ -70,7 +71,7 @@ jobs:
           cp -r data _site/data
 
       - name: 上传 Pages 静态站点
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: _site
 
@@ -83,12 +84,12 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: 开通/配置 Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
         with:
           enablement: true
 
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
 
       - name: 新版本通知摘要
         if: needs.monitor.outputs.has_new == 'true'
