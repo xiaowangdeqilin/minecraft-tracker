@@ -65,6 +65,10 @@ tbody tr:hover { background: rgba(79,140,255,.07); }
 .tag-contents { font-size: 11px; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 6px; margin-left: 4px; }
 input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
 .size { color: var(--muted); font-variant-numeric: tabular-nums; }
+.stbtn { background: transparent; border: 1px solid var(--border); color: var(--muted); font: inherit; font-size: 12.5px; border-radius: 8px; padding: 3px 10px; cursor: pointer; transition: border-color .15s, color .15s, background .15s; }
+.stbtn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-weak, rgba(106,161,255,.12)); }
+.stbtn.dim { opacity: .65; }
+.stbtn.dim:hover { opacity: 1; }
 
 #selectionBar { position: fixed; bottom: 0; left: 0; right: 0; background: var(--panel2); border-top: 2px solid var(--accent); padding: 12px 16px; display: none; z-index: 20; box-shadow: 0 -6px 20px rgba(0,0,0,.3); }
 #selectionBar.show { display: block; }
@@ -200,6 +204,7 @@ let INDEX = null, filtered = [], selection = new Set(), currentFilter = "all";
 let pageSize = localStorage.getItem("mc-page-size") || "50";   // 每页条数，"all" = 全部
 let page = 1;
 const viewSide = {};          // 查看对话框中每个版本当前的端
+let dlgIds = [];              // 当前对话框正在展示的版本 ID（点状态栏直达时与勾选无关）
 const compareSide = { side: "client" };
 
 const $ = s => document.querySelector(s);
@@ -313,8 +318,8 @@ function renderTable() {
       <td><span class="badge ${v.type}">${TYPE_ZH[v.type] || v.type}</span></td>
       <td>${fmtTime(v.releaseTime)}</td>
       <td class="size">${v.tracked
-        ? `✅ 已拆包${v.server ? " 🖥 服务端" : ""}${v.contents ? " 📄 内容" : ""}`
-        : "仅元数据"}</td>
+        ? `<button class="stbtn" title="点击查看 ${esc(v.id)} 详情" onclick="openDlg('view',['${esc(v.id)}'])">✅ 已拆包${v.server ? " 🖥 服务端" : ""}${v.contents ? " 📄 内容" : ""}</button>`
+        : `<button class="stbtn dim" title="点击查看 ${esc(v.id)} 元数据" onclick="openDlg('view',['${esc(v.id)}'])">仅元数据</button>`}</td>
     </tr>`).join("");
   tb.querySelectorAll("input[type=checkbox]").forEach(cb =>
     cb.addEventListener("change", () => { cb.checked ? selection.add(cb.dataset.id) : selection.delete(cb.dataset.id); updateBar(); }));
@@ -352,10 +357,11 @@ $("#btnCompare").addEventListener("click", () => openDlg("compare"));
 for (const d of [$("#dlg"), $("#fileDlg")])
   d.addEventListener("click", e => { if (e.target === d) d.close(); });
 
-async function openDlg(mode) {
+async function openDlg(mode, ids) {
   const dlg = $("#dlg"), body = $("#dlgBody");
-  const ids = [...selection];
+  ids = ids || [...selection];
   if (!ids.length) return;
+  dlgIds = ids;
   if (mode === "compare") {
     if (ids.length !== 2) { alert("对比功能需要恰好选择 2 个版本"); return; }
   }
@@ -373,7 +379,7 @@ async function openDlgSafe(mode) {
   const dlg = $("#dlg");
   if (!dlg.open) dlg.showModal();
   const body = $("#dlgBody");
-  const ids = [...selection];
+  const ids = dlgIds.length ? dlgIds : [...selection];
   body.innerHTML = `<div class="loading">⏳ 正在加载版本数据…</div>`;
   try {
     if (mode === "view") await renderView(ids, body);
