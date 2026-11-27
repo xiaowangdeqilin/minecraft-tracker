@@ -172,8 +172,7 @@ mark { background: var(--gold); color: #111; border-radius: 2px; }
   <footer>
     由 GitHub Actions 自动维护 · 数据仅用于学习研究 ·
     <a href="https://github.com/xiaowangdeqilin/minecraft-tracker" target="_blank">GitHub 仓库</a> ·
-    🖥 客户端 / 🗄 服务端 可切换查看 · 点击带 📄 的文件查看文本内容 ·
-    未收录的版本可在仓库 Actions 页手动触发工作流补拆
+    🖥 客户端 / 🗄 服务端 可切换查看 · 任意文件均可点击查看（📄 为仓库收录秒开，其余自动从 Mojang 官方 CDN 在线读取，支持图片 base64 显示 / 音频播放 / class 十六进制）
   </footer>
 </div>
 
@@ -420,7 +419,7 @@ async function renderView(ids, body) {
       <span class="sidebtn ${cur === "server" ? "active" : serverOK ? "" : "disabled"}" ${serverOK ? `onclick="switchSide('${esc(id)}','server')"` : ""}>🗄 服务端${serverOK ? "" : "（未收录）"}</span>`;
     const L = clientOK ? await loadListing(id) : null;
     lists += `<div class="listbox">
-      <div class="listhead"><b>📦 ${esc(id)} 文件清单${L ? `（${L.fileCount} 个，点击文件名查看内容）` : ""}</b>
+      <div class="listhead"><b>📦 ${esc(id)} 文件清单${L ? `（${L.fileCount} 个，任意文件均可点击查看，📄 秒开 / 其余在线读取）` : ""}</b>
         <span style="display:inline-flex;gap:6px">${sideBtn}</span>
         <input placeholder="全量搜索：如 en_us / pack.mcmeta / shader…" oninput="filterList('${esc(id)}', this.value)"></div>
       <div class="filelist" id="fl-${esc(id)}">${L ? renderFileRows(id, 0, CHUNK) : `<div class="row" style="cursor:default"><span style="color:var(--muted)">该端清单尚未收录</span></div>`}</div>
@@ -488,7 +487,7 @@ function filterList(id, q) {
 }
 
 /* ---------- 文件内容查看器 ---------- */
-async function openFile(id, i, side = viewSide[id] || "client") {
+async function openFile(id, i, side = viewSide[id] || "client", forceHex = false) {
   const L = await loadListing(id, side);
   const f = L.files[i];
   if (!f) return;
@@ -503,35 +502,220 @@ async function openFile(id, i, side = viewSide[id] || "client") {
       <span>CRC32 <b>${f.c}</b></span>
       <span>路径 <b style="word-break:break-all">${esc(f.p)}</b></span>
     </div>`;
-  if (!f.x) {
-    body.innerHTML = meta + `<div class="hint">该文件的内容未收录。本站只提取小型可读文本（JSON / 语言文件 / 配置 / 着色器等，单个 ≤ 4MB），二进制文件（class / png / 音频等）不收录。</div>`;
+  fileCtx = { id, i, side, forceHex: !!forceHex };
+  if (f.x && !forceHex) {
+    try {
+      const C = await loadContents(id, side);
+      const text = C.files[f.p];
+      if (text !== undefined) {
+        body.innerHTML = meta + `
+          <div class="fbar">
+            <input id="fsearch" placeholder="在内容中搜索…" oninput="highlightContent(this.value)">
+            <span id="fcount" style="color:var(--muted);font-size:13px"></span>
+            <button onclick="copyContent()">📋 复制</button>
+            <button class="ghost" onclick="clearHighlight()">清除高亮</button>
+            ${C.truncated ? '<span style="color:var(--gold);font-size:12px">⚠ 该版本内容因总量上限被部分截断</span>' : ""}
+            <span class="sidebtn" title="从 jar 中按十六进制重新读取" onclick="openFile('${esc(id)}',${i},'${side}',true)">#️⃣ 十六进制</span>
+          </div>
+          <pre id="fileContent"></pre>`;
+        const lines = text.split("\n").length;
+        const pre = document.getElementById("fileContent");
+        pre.textContent = text;
+        pre.dataset.raw = text;
+        document.getElementById("fcount").textContent = `${lines} 行 / ${fmtSize(f.s)} · 仓库秒开`;
+        return;
+      }
+    } catch {}
+  }
+  // 未收录（或用户要求十六进制）：从 Mojang 官方 CDN 按需下载 jar 并解出该文件
+  await renderFromJar(id, f, side, meta, body, forceHex);
+}
+
+/* ---------- 在线读取 jar（Mojang 官方 CDN，已确认 CORS 全开） ---------- */
+const jarCache = {};      // `${side}:${id}` -> { zip: Map, u8: Uint8Array }（仅保留最近 2 个，控制内存）
+const verJsonCache = {};  // id -> Mojang 版本 JSON（含下载地址）
+let fileCtx = null;       // 当前查看的文件上下文
+
+async function getVersionJson(id) {
+  if (verJsonCache[id]) return verJsonCache[id];
+  const v = INDEX.versions.find(x => x.id === id);
+  if (!v || !v.metaUrl) throw new Error("找不到该版本的官方元数据地址");
+  const j = await (await fetch(v.metaUrl)).json();
+  verJsonCache[id] = j;
+  return j;
+}
+
+// 最小化 ZIP 中央目录解析器（jar 本质是 zip；条目最大 ~50MB，无需 ZIP64）
+function parseZip(u8) {
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  let eocd = -1;
+  for (let i = u8.length - 22; i >= Math.max(0, u8.length - 22 - 65557); i--) {
+    if (u8[i] === 0x50 && u8[i+1] === 0x4b && u8[i+2] === 0x05 && u8[i+3] === 0x06) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error("不是有效的 ZIP/JAR 文件");
+  const count = u8[eocd+10] | (u8[eocd+11] << 8);
+  const cdOffRaw = (u8[eocd+16] | (u8[eocd+17] << 8) | (u8[eocd+18] << 16) | (u8[eocd+19] << 24)) >>> 0;
+  // 部分 老 jar 头部有前置数据，CD 偏移与实际不符：定位真实的第一个 CD 条目，计算偏移差并全程修正
+  let p = cdOffRaw, delta = 0;
+  const findSig = from => {
+    for (let i = from; i < Math.min(from + 65536, u8.length - 4); i++) {
+      if (u8[i] === 0x50 && u8[i+1] === 0x4b && u8[i+2] === 0x01 && u8[i+3] === 0x02) return i;
+    }
+    return -1;
+  };
+  if (u8[p] !== 0x50 || u8[p+1] !== 0x4b || u8[p+2] !== 0x01 || u8[p+3] !== 0x02) {
+    const found = findSig(cdOffRaw);
+    if (found < 0) throw new Error("ZIP 中央目录解析失败");
+    delta = found - cdOffRaw;
+    p = found;
+  }
+  const map = new Map();
+  const td = new TextDecoder();
+  for (let k = 0; k < count; k++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p+10, true);
+    const compSize = dv.getUint32(p+20, true) >>> 0;
+    const nameLen = dv.getUint16(p+28, true), extraLen = dv.getUint16(p+30, true), cmtLen = dv.getUint16(p+32, true);
+    const localOff = (dv.getUint32(p+42, true) >>> 0) + delta;
+    const name = td.decode(u8.subarray(p+46, p+46+nameLen));
+    const nameLen2 = dv.getUint16(localOff+26, true), extraLen2 = dv.getUint16(localOff+28, true);
+    map.set(name, { method, compSize, dataOff: localOff + 30 + nameLen2 + extraLen2 });
+    p += 46 + nameLen + extraLen + cmtLen;
+  }
+  return map;
+}
+
+async function getJar(id, side, onProgress) {
+  const key = side + ":" + id;
+  if (jarCache[key]) return jarCache[key];
+  const vj = await getVersionJson(id);
+  const d = vj.downloads && vj.downloads[side === "server" ? "server" : "client"];
+  if (!d || !d.url) throw new Error(`该版本没有${side === "server" ? "服务端" : "客户端"} jar 的官方下载地址`);
+  const resp = await fetch(d.url);
+  if (!resp.ok) throw new Error(`Mojang CDN 返回 ${resp.status}`);
+  const total = d.size || +(resp.headers.get("content-length") || 0);
+  const reader = resp.body.getReader();
+  const chunks = [];
+  let loaded = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value); loaded += value.length;
+    if (onProgress && total) onProgress(loaded, total);
+  }
+  const u8 = new Uint8Array(loaded);
+  let off = 0;
+  for (const c of chunks) { u8.set(c, off); off += c.length; }
+  const zip = parseZip(u8);
+  // 内存控制：只保留最近 2 个 jar
+  const keys = Object.keys(jarCache);
+  if (keys.length >= 2) { delete jarCache[keys[0]]; }
+  jarCache[key] = { zip, u8 };
+  return jarCache[key];
+}
+
+async function readZipEntry(jar, name) {
+  const e = jar.zip.get(name);
+  if (!e) return null;
+  const comp = jar.u8.subarray(e.dataOff, e.dataOff + e.compSize);
+  if (e.method === 0) return comp;
+  const ds = new DecompressionStream("deflate-raw");
+  const stream = new Blob([comp]).stream().pipeThrough(ds);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+const IMG_EXTS = new Set(["png","jpg","jpeg","gif","webp","bmp","svg","ico","tga"]);
+const AUDIO_EXTS = new Set(["ogg","oga","mp3","wav","flac","opus"]);
+const fileExt = p => (p.match(/\.([a-z0-9]+)$/i) || [,""])[1].toLowerCase();
+const looksTextual = u8 => { const n = Math.min(u8.length, 4096); for (let i = 0; i < n; i++) if (u8[i] === 0) return false; return true; };
+function u8ToBase64(u8) {
+  let s = "";
+  const CH = 0x8000;
+  for (let i = 0; i < u8.length; i += CH) s += String.fromCharCode.apply(null, u8.subarray(i, i + CH));
+  return btoa(s);
+}
+function hexDump(u8, limit) {
+  const n = Math.min(u8.length, limit || 16384);
+  let out = "";
+  for (let off = 0; off < n; off += 16) {
+    const row = u8.subarray(off, Math.min(off + 16, n));
+    const hex = Array.from(row, b => b.toString(16).padStart(2, "0")).join(" ").padEnd(47);
+    const asc = Array.from(row, b => (b >= 32 && b < 127) ? String.fromCharCode(b) : ".").join("");
+    out += off.toString(16).padStart(8, "0") + "  " + hex + "  " + asc + "\n";
+  }
+  if (u8.length > n) out += `\n… 其余 ${(u8.length - n).toLocaleString()} 字节未显示`;
+  return out;
+}
+
+async function renderFromJar(id, f, side, meta, body, forceHex) {
+  const ext = fileExt(f.p);
+  body.innerHTML = meta + `<div class="loading" id="jarProg">⏳ 正在从 Mojang 官方 CDN 获取 jar…（首次约 ${side === "server" ? "50" : "40"}MB，已缓存后秒开）</div>`;
+  let bytes;
+  try {
+    const jar = await getJar(id, side, (loaded, total) => {
+      const el = document.getElementById("jarProg");
+      if (el) el.textContent = `⏳ 正在从 Mojang 官方 CDN 获取 jar（${fmtSize(loaded)} / ${fmtSize(total)}）…`;
+    });
+    bytes = await readZipEntry(jar, f.p);
+  } catch (e) {
+    body.innerHTML = meta + `<div class="hint">❌ 在线读取失败：${esc(e.message)}<br>请检查网络（需能访问 piston-data.mojang.com）。</div>`;
     return;
   }
-  try {
-    const C = await loadContents(id, side);
-    const text = C.files[f.p];
-    if (text === undefined) {
-      body.innerHTML = meta + `<div class="hint">内容索引中找不到该文件（可能因每版本提取总量上限被截断）。</div>`;
-      return;
-    }
-    body.innerHTML = meta + `
-      <div class="fbar">
-        <input id="fsearch" placeholder="在内容中搜索…" oninput="highlightContent(this.value)">
-        <span id="fcount" style="color:var(--muted);font-size:13px"></span>
-        <button onclick="copyContent()">📋 复制</button>
-        <button class="ghost" onclick="clearHighlight()">清除高亮</button>
-        ${C.truncated ? '<span style="color:var(--gold);font-size:12px">⚠ 该版本内容因总量上限被部分截断</span>' : ""}
-      </div>
-      <pre id="fileContent"></pre>`;
-    const lines = text.split("\n").length;
-    const pre = document.getElementById("fileContent");
-    pre.textContent = text;
-    pre.dataset.raw = text;
-    document.getElementById("fcount").textContent = `${lines} 行 / ${fmtSize(f.s)}`;
-  } catch (e) {
-    body.innerHTML = meta + `<div class="hint">❌ 内容加载失败：${esc(e.message)}</div>`;
+  if (!bytes) {
+    body.innerHTML = meta + `<div class="hint">jar 中找不到该文件（可能是目录条目或路径变化）。</div>`;
+    return;
   }
+  const isImg = IMG_EXTS.has(ext), isAudio = AUDIO_EXTS.has(ext);
+  const defaultMode = forceHex ? "hex" : isImg ? "img" : isAudio ? "audio" : (looksTextual(bytes) ? "text" : "hex");
+  fileCtx = { id, p: f.p, bytes, isImg };
+
+  const toggles = mode => `<div class="fbar">
+      <span style="color:var(--muted);font-size:13px">查看方式：</span>
+      ${isImg ? `<span class="sidebtn ${mode === "img" ? "active" : ""}" onclick="fileRender('img')">🖼 图片</span>` : ""}
+      ${isAudio ? `<span class="sidebtn ${mode === "audio" ? "active" : ""}" onclick="fileRender('audio')">🔊 播放</span>` : ""}
+      <span class="sidebtn ${mode === "text" ? "active" : ""}" onclick="fileRender('text')">📝 文本</span>
+      <span class="sidebtn ${mode === "hex" ? "active" : ""}" onclick="fileRender('hex')">#️⃣ 十六进制</span>
+      <span id="fcount" style="color:var(--muted);font-size:13px"></span>
+      <button onclick="copyContent()">${isImg ? "📋 复制 base64" : "📋 复制"}</button>
+    </div>`;
+
+  fileCtx.render = mode => {
+    const b = $("#fileBody");
+    if (mode === "img") {
+      const mime = ext === "svg" ? "image/svg+xml" : ext === "ico" ? "image/x-icon" : "image/" + (ext === "jpg" ? "jpeg" : ext);
+      const dataUri = "data:" + mime + ";base64," + u8ToBase64(fileCtx.bytes);
+      b.innerHTML = meta + toggles(mode) + `
+        <div style="text-align:center;padding:16px 0;background:var(--panel2);border-radius:10px">
+          <img src="${dataUri}" alt="${esc(f.p)}" style="max-width:100%;max-height:56vh;image-rendering:pixelated">
+        </div>
+        <pre id="fileContent" hidden></pre>`;
+      document.getElementById("fileContent").dataset.raw = dataUri;
+      document.getElementById("fcount").textContent = `${fileCtx.bytes.length.toLocaleString()} 字节 · base64 转存显示`;
+    } else if (mode === "audio") {
+      const url = URL.createObjectURL(new Blob([fileCtx.bytes]));
+      b.innerHTML = meta + toggles(mode) + `
+        <div style="text-align:center;padding:32px 0"><audio controls src="${url}" style="width:100%"></audio></div>
+        <pre id="fileContent" hidden></pre>`;
+      document.getElementById("fileContent").dataset.raw = "";
+      document.getElementById("fcount").textContent = `${fileCtx.bytes.length.toLocaleString()} 字节 · 音频`;
+    } else if (mode === "hex") {
+      b.innerHTML = meta + toggles(mode) + `<pre id="fileContent" style="color:var(--muted)"></pre>`;
+      const pre = document.getElementById("fileContent");
+      pre.textContent = hexDump(fileCtx.bytes);
+      pre.dataset.raw = pre.textContent;
+      document.getElementById("fcount").textContent = `${fileCtx.bytes.length.toLocaleString()} 字节 · 十六进制`;
+    } else {
+      const text = new TextDecoder().decode(fileCtx.bytes);
+      b.innerHTML = meta + toggles(mode) + `<pre id="fileContent"></pre>`;
+      const pre = document.getElementById("fileContent");
+      pre.textContent = text;
+      pre.dataset.raw = text;
+      document.getElementById("fcount").textContent = `${text.split("\n").length} 行 / ${fmtSize(f.s)} · CDN 在线读取`;
+    }
+  };
+  fileCtx.render(defaultMode);
 }
+function fileRender(mode) { if (fileCtx && fileCtx.render) fileCtx.render(mode); }
 
 function highlightContent(q) {
   const pre = document.getElementById("fileContent");
